@@ -1,16 +1,102 @@
-services:
+# SeAT Docker Compose Configuration with Cloudflare Tunnel
+# 
+# This setup uses Cloudflare Tunnel (cloudflared) instead of a reverse proxy.
+# No ports need to be exposed - Cloudflare Tunnel handles all external access.
+#
+# Usage:
+#   docker compose up -d
+#
+# Prerequisites:
+#   - Cloudflare account with a tunnel created
+#   - CLOUDFLARE_TUNNEL_TOKEN environment variable set
+#   - .env file configured with required variables
+#
+# For Portainer GitOps, configure environment variables in Portainer UI
+# instead of using .env file (which is gitignored)
 
+services:
+  # Cloudflare Tunnel Service
+  # Provides secure, zero-trust access without exposing ports
+  # Configure routing in Cloudflare Dashboard:
+  #   - Public Hostname: seat.haku.lol (or your domain)
+  #   - Service: http://front:8080 (uses Docker network, no port exposure needed)
+  cloudflare-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflare-tunnel
+    hostname: cloudflare-tunnel
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+    command: tunnel run
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - seat-gateway
+    environment:
+      - "TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:?CLOUDFLARE_TUNNEL_TOKEN is required}"
+    healthcheck:
+      test: ["CMD", "cloudflared", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - front
+
+  # SeAT Frontend Web Service
+  # Serves the SeAT web interface on port 8080 (internal)
+  # Cloudflare Tunnel will route traffic to this service via Docker network: http://front:8080
+  # Also exposed on localhost:18080 for local testing (http://localhost:18080)
   front:
     image: ghcr.io/eveseat/seat:5
     restart: always
     command: web
+    ports:
+      - "127.0.0.1:18080:8080"  # Local access only (http://localhost:18080)
     volumes:
       - "seat-storage:/var/www/seat/storage"
       - ./packages:/var/www/seat/packages:ro  # development only
-    env_file:
-      - .env
+    environment:
+      # IMPORTANT: APP_URL must be set with full URL including protocol (e.g., https://seat.example.com)
+      # If not set, Laravel will fail with "Invalid URI: Host is malformed" error
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_ENV=${APP_ENV:-local}
+      - APP_KEY=${APP_KEY}
+      - APP_LOCALE=${APP_LOCALE:-en}
+      - SEAT_DOMAIN=${SEAT_DOMAIN}
+      - APP_URL=${APP_URL}
+      - LOG_LEVEL=${LOG_LEVEL:-error}
+      - XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/tmp}
+      - DB_CONNECTION=${DB_CONNECTION:-mysql}
+      - DB_DATABASE=${DB_DATABASE:-seat}
+      - DB_HOST=${DB_HOST:-mariadb}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USERNAME=${DB_USERNAME:-seat}
+      - REDIS_HOST=${REDIS_HOST:-cache}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - MAIL_DRIVER=${MAIL_DRIVER:-smtp}
+      - MAIL_ENCRYPTION=${MAIL_ENCRYPTION:-null}
+      - MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS:-noreply@localhost.local}
+      - MAIL_FROM_NAME=${MAIL_FROM_NAME:-SeAT Administrator}
+      - MAIL_HOST=${MAIL_HOST:-smtp.mailtrap.io}
+      - MAIL_PASSWORD=${MAIL_PASSWORD:-null}
+      - MAIL_PORT=${MAIL_PORT:-2525}
+      - MAIL_USERNAME=${MAIL_USERNAME:-null}
+      - EVE_CLIENT_ID=${EVE_CLIENT_ID}
+      - EVE_CLIENT_SECRET=${EVE_CLIENT_SECRET}
+      - EVE_CALLBACK_URL=${EVE_CALLBACK_URL:-${APP_URL}/auth/eve/callback}
+      - SEAT_PLUGINS=${SEAT_PLUGINS:-}
+      - ESEYE_CACHE_CONNECTION=${ESEYE_CACHE_CONNECTION:-cache}
+      - ESEYE_CACHE_DRIVER=${ESEYE_CACHE_DRIVER:-file}
+      - ESEYE_CACHE_LOCK_CONNECTION=${ESEYE_CACHE_LOCK_CONNECTION:-default}
+      - ESEYE_CACHE_STORAGE_PATH=${ESEYE_CACHE_STORAGE_PATH:-eseye}
     depends_on:
       - cache
+      - mariadb
     networks:
       - seat-gateway
       - seat-internal
@@ -20,6 +106,8 @@ services:
         max-size: "10Mb"
         max-file: "5"
 
+  # SeAT Worker Service
+  # Processes background jobs using Laravel Horizon
   worker:
     image: ghcr.io/eveseat/seat:5
     restart: always
@@ -27,10 +115,42 @@ services:
     volumes:
       - "seat-storage:/var/www/seat/storage"
       - ./packages:/var/www/seat/packages:ro  # development only
-    env_file:
-      - .env
+    environment:
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_ENV=${APP_ENV:-local}
+      - APP_KEY=${APP_KEY}
+      - APP_LOCALE=${APP_LOCALE:-en}
+      - SEAT_DOMAIN=${SEAT_DOMAIN}
+      - APP_URL=${APP_URL}
+      - LOG_LEVEL=${LOG_LEVEL:-error}
+      - XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/tmp}
+      - DB_CONNECTION=${DB_CONNECTION:-mysql}
+      - DB_DATABASE=${DB_DATABASE:-seat}
+      - DB_HOST=${DB_HOST:-mariadb}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USERNAME=${DB_USERNAME:-seat}
+      - REDIS_HOST=${REDIS_HOST:-cache}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - MAIL_DRIVER=${MAIL_DRIVER:-smtp}
+      - MAIL_ENCRYPTION=${MAIL_ENCRYPTION:-null}
+      - MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS:-noreply@localhost.local}
+      - MAIL_FROM_NAME=${MAIL_FROM_NAME:-SeAT Administrator}
+      - MAIL_HOST=${MAIL_HOST:-smtp.mailtrap.io}
+      - MAIL_PASSWORD=${MAIL_PASSWORD:-null}
+      - MAIL_PORT=${MAIL_PORT:-2525}
+      - MAIL_USERNAME=${MAIL_USERNAME:-null}
+      - EVE_CLIENT_ID=${EVE_CLIENT_ID}
+      - EVE_CLIENT_SECRET=${EVE_CLIENT_SECRET}
+      - EVE_CALLBACK_URL=${EVE_CALLBACK_URL:-${APP_URL}/auth/eve/callback}
+      - SEAT_PLUGINS=${SEAT_PLUGINS:-}
+      - ESEYE_CACHE_CONNECTION=${ESEYE_CACHE_CONNECTION:-cache}
+      - ESEYE_CACHE_DRIVER=${ESEYE_CACHE_DRIVER:-file}
+      - ESEYE_CACHE_LOCK_CONNECTION=${ESEYE_CACHE_LOCK_CONNECTION:-default}
+      - ESEYE_CACHE_STORAGE_PATH=${ESEYE_CACHE_STORAGE_PATH:-eseye}
     depends_on:
       - cache
+      - mariadb
       - front
     networks:
       - seat-gateway
@@ -41,6 +161,8 @@ services:
         max-size: "10Mb"
         max-file: "5"
 
+  # SeAT Scheduler Service
+  # Runs scheduled tasks (cron jobs) for SeAT
   scheduler:
     image: ghcr.io/eveseat/seat:5
     restart: always
@@ -48,10 +170,42 @@ services:
     volumes:
       - "seat-storage:/var/www/seat/storage"
       - ./packages:/var/www/seat/packages:ro  # development only
-    env_file:
-      - .env
+    environment:
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_ENV=${APP_ENV:-local}
+      - APP_KEY=${APP_KEY}
+      - APP_LOCALE=${APP_LOCALE:-en}
+      - SEAT_DOMAIN=${SEAT_DOMAIN}
+      - APP_URL=${APP_URL}
+      - LOG_LEVEL=${LOG_LEVEL:-error}
+      - XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/tmp}
+      - DB_CONNECTION=${DB_CONNECTION:-mysql}
+      - DB_DATABASE=${DB_DATABASE:-seat}
+      - DB_HOST=${DB_HOST:-mariadb}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USERNAME=${DB_USERNAME:-seat}
+      - REDIS_HOST=${REDIS_HOST:-cache}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - MAIL_DRIVER=${MAIL_DRIVER:-smtp}
+      - MAIL_ENCRYPTION=${MAIL_ENCRYPTION:-null}
+      - MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS:-noreply@localhost.local}
+      - MAIL_FROM_NAME=${MAIL_FROM_NAME:-SeAT Administrator}
+      - MAIL_HOST=${MAIL_HOST:-smtp.mailtrap.io}
+      - MAIL_PASSWORD=${MAIL_PASSWORD:-null}
+      - MAIL_PORT=${MAIL_PORT:-2525}
+      - MAIL_USERNAME=${MAIL_USERNAME:-null}
+      - EVE_CLIENT_ID=${EVE_CLIENT_ID}
+      - EVE_CLIENT_SECRET=${EVE_CLIENT_SECRET}
+      - EVE_CALLBACK_URL=${EVE_CALLBACK_URL:-${APP_URL}/auth/eve/callback}
+      - SEAT_PLUGINS=${SEAT_PLUGINS:-}
+      - ESEYE_CACHE_CONNECTION=${ESEYE_CACHE_CONNECTION:-cache}
+      - ESEYE_CACHE_DRIVER=${ESEYE_CACHE_DRIVER:-file}
+      - ESEYE_CACHE_LOCK_CONNECTION=${ESEYE_CACHE_LOCK_CONNECTION:-default}
+      - ESEYE_CACHE_STORAGE_PATH=${ESEYE_CACHE_STORAGE_PATH:-eseye}
     depends_on:
       - cache
+      - mariadb
       - worker
     networks:
       - seat-gateway
@@ -62,6 +216,8 @@ services:
         max-size: "10Mb"
         max-file: "5"
 
+  # Redis Cache Service
+  # Provides caching and job queue backend for SeAT
   cache:
     image: redis:7-alpine
     restart: always
@@ -72,11 +228,36 @@ services:
       options:
         max-size: "10Mb"
         max-file: "5"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+
+  # MariaDB Database Service
+  # Stores all SeAT application data
+  mariadb:
+    image: mariadb:10.11
+    restart: always
+    networks:
+      - seat-internal
+    volumes:
+      - "mariadb-data:/var/lib/mysql"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10Mb"
+        max-file: "5"
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_USER: ${DB_USERNAME:-seat}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_DATABASE:-seat}
 
 volumes:
-    seat-storage:
+  seat-storage:
+  mariadb-data:
+  redis-data:
 
 networks:
-    seat-gateway:
-    seat-internal:
-      internal: true
+  seat-gateway:
+  seat-internal:
+    internal: true
